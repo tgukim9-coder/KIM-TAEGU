@@ -248,8 +248,8 @@
   간이 버전이며, 정밀화하려면 ErgoAssess에서 쓴 포즈 추정(MoveNet) 방식을 붙이면 됩니다.
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+<script src="libs/tf.min.js"></script>
+<script src="libs/coco-ssd.min.js"></script>
 <script>
 const DANGER_RADIUS = 1.5;
 const video = document.getElementById('video');
@@ -333,8 +333,11 @@ startBtn.addEventListener('click', async () => {
     camPlaceholder.style.display = 'none';
     switchCamBtn.style.display = 'block';
     log('카메라 스트림 시작 (후면 카메라)', 'ok');
+    if (typeof tf === 'undefined' || typeof cocoSsd === 'undefined') {
+      throw new Error('AI 라이브러리 파일(libs/tf.min.js, libs/coco-ssd.min.js)을 불러오지 못했습니다. 저장소에 libs 폴더가 올라갔는지 확인하세요.');
+    }
     camStatus.textContent = '모델 로딩 중...';
-    model = await coco_ssd.load({ base: 'lite_mobilenet_v2' });
+    model = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
     camStatus.textContent = '작동 중';
     log('AI 인식 모델 로드 완료', 'ok');
     running = true;
@@ -361,14 +364,35 @@ function resizeCanvas() {
 }
 window.addEventListener('resize', resizeCanvas);
 
+let loopErrorLogged = false;
+
 async function detectLoop() {
   if (!running) return;
   resizeCanvas();
-  const predictions = await model.detect(video);
+
+  if (video.readyState < 2 || video.videoWidth === 0) {
+    // 비디오 프레임이 아직 준비 안 됨 - 이번 프레임은 건너뛰고 계속 재시도
+    requestAnimationFrame(detectLoop);
+    return;
+  }
+
+  let predictions;
+  try {
+    predictions = await model.detect(video);
+  } catch (err) {
+    if (!loopErrorLogged) {
+      log('AI 인식 중 오류: ' + err.message + ' (재시도 중)', 'warn');
+      loopErrorLogged = true;
+    }
+    requestAnimationFrame(detectLoop);
+    return;
+  }
+
   ctx.clearRect(0, 0, overlay.width, overlay.height);
 
-  const scaleX = overlay.width / video.videoWidth;
-  const scaleY = overlay.height / video.videoHeight;
+  try {
+    const scaleX = overlay.width / video.videoWidth;
+    const scaleY = overlay.height / video.videoHeight;
 
   let personDetected = false;
   let otherObjectDetected = false;
@@ -457,7 +481,13 @@ async function detectLoop() {
     else if (state === 'ok' && lastState) { log('위험구역 이탈, 정상 복귀', 'ok'); }
     lastState = state;
   }
-  if (state === 'alarm' && Math.random() < 0.15) beep(880, 0.1);
+    if (state === 'alarm' && Math.random() < 0.15) beep(880, 0.1);
+  } catch (err) {
+    if (!loopErrorLogged) {
+      log('화면 처리 중 오류: ' + err.message + ' (재시도 중)', 'warn');
+      loopErrorLogged = true;
+    }
+  }
 
   requestAnimationFrame(detectLoop);
 }

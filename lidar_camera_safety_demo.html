@@ -216,7 +216,7 @@
           <div class="counter-label">위험구역 진입 (근접 경보)</div>
         </div>
       </div>
-      <div class="zone-note">새로운 사람이 인식될 때마다 "화면 통과 인원"이 1씩 증가합니다. 잠깐 사라졌다가 1분 안에 다시 나타나면 <b style="color:var(--text)">얼굴을 먼저 비교</b>하고, 얼굴이 안 보이면 옷차림 등 외형으로 같은 사람인지 판단해 중복으로 세지 않습니다. "위험구역 진입"은 같은 사람이라도 들어올 때마다 매번 카운트됩니다 (근접경보 발생 횟수 기록용).</div>
+      <div class="zone-note">새로운 사람이 인식될 때마다 "화면 통과 인원"이 1씩 증가합니다. 잠깐 사라졌다가 1분 안에 다시 나타나면 옷차림 등 외형을 비교해 같은 사람이면 중복으로 세지 않습니다. <b style="color:var(--text)">※ 같은 색 작업복을 입은 근로자들은 서로 구분이 잘 안 될 수 있습니다</b> (아래 아키텍처 메모 참고). "위험구역 진입"은 같은 사람이라도 들어올 때마다 매번 카운트됩니다 (근접경보 발생 횟수 기록용).</div>
     </div>
 
     <div class="panel">
@@ -269,14 +269,16 @@
   나머지 융합 로직·경보 로직은 그대로 재사용할 수 있습니다. 카메라 인식은 지금 이미 실제 웹캠 영상으로 TensorFlow.js(COCO-SSD) 모델이 동작 중입니다 —
   "사람" 클래스가 감지될 때만 위험 판정이 나도록 사업계획서의 오경보 제거 로직을 구현했습니다. 쓰러짐 의심 판정은 사람 박스의 가로/세로 비율로 추정하는
   간이 버전이며, 정밀화하려면 ErgoAssess에서 쓴 포즈 추정(MoveNet) 방식을 붙이면 됩니다. 통계는 브라우저에 저장(localStorage)되므로 같은 기기·같은
-  브라우저에서 다시 접속해도 기록이 유지됩니다 (다른 기기와는 공유되지 않습니다). 인원 재인식은 face-api.js로 얼굴을 우선 비교하고, 얼굴이
-  안 보이면(뒷모습, 마스크·안전모 착용 등) 옷 색상 등 화면상 외형으로 보조 판단하는 방식입니다. 얼굴 인식도 완벽하진 않아서, 비슷하게 생긴 다른
-  사람을 같은 사람으로 오인하거나 조명이 크게 바뀌면 같은 사람을 새로 카운트할 수 있습니다 — 참고용 근사치로 봐주시면 됩니다.
+  브라우저에서 다시 접속해도 기록이 유지됩니다 (다른 기기와는 공유되지 않습니다). 인원 재인식은 얼굴 인식이 아니라 옷 색상 등 화면상 외형을
+  간단히 비교하는 방식입니다 (얼굴 인식은 모델 용량이 커서 이번엔 제외했습니다). <b style="color:var(--yellow)">한계점:</b> 현장 근로자들이
+  대부분 같은 색 작업복·안전조끼를 입는다면, 이 방식은 서로 다른 사람을 같은 사람으로 잘못 인식할 가능성이 높습니다 — 즉 "화면 통과 인원(고유
+  인원수)" 수치는 참고용 근사치일 뿐, 실제 현장에서 정확한 고유 인원 집계가 필요하다면 사원증/RFID 태그 같은 별도의 식별 수단과 결합하는 것이
+  정석입니다. 반대로 "위험구역 진입" 카운트(근접경보 발생 횟수)는 개인 식별과 무관하게 항상 정확하게 집계되므로, 실제 안전관리 지표로는
+  오히려 이쪽이 더 신뢰할 수 있는 숫자입니다.
 </div>
 
 <script src="libs/tf.min.js"></script>
 <script src="libs/coco-ssd.min.js"></script>
-<script src="libs/face-api.min.js"></script>
 <script>
 const DANGER_RADIUS = 1.5;
 const video = document.getElementById('video');
@@ -318,51 +320,11 @@ const CONFIRM_FRAMES = 3;          // 이 횟수 이상 매칭되어야 "진짜 
 const TRACK_TIMEOUT_MS = 1500;     // 이 시간 이상 화면에서 안 보이면 "사라짐" 처리 (재인식 대기로 이동)
 const REID_MEMORY_MS = 60000;      // 사라진 후 이 시간(1분) 안에 돌아오면 재인식 시도
 const REID_MAX_DIST = 60;          // 외형(색상) 지문 유사도 임계값 (작을수록 엄격, 얼굴을 못 쓸 때의 보조 수단)
-const FACE_MAX_DIST = 0.6;         // 얼굴 지문 유사도 임계값 (face-api.js 권장값, 작을수록 엄격)
 const FP_GRID = 4;
 const fpCanvas = document.createElement('canvas');
 fpCanvas.width = FP_GRID;
 fpCanvas.height = FP_GRID;
 const fpCtx = fpCanvas.getContext('2d', { willReadFrequently: true });
-const faceCanvas = document.createElement('canvas');
-
-let faceModelsLoaded = false;
-
-async function loadFaceModels() {
-  try {
-    await faceapi.nets.tinyFaceDetector.loadFromUri('libs/face-models');
-    await faceapi.nets.faceLandmark68TinyNet.loadFromUri('libs/face-models');
-    await faceapi.nets.faceRecognitionNet.loadFromUri('libs/face-models');
-    faceModelsLoaded = true;
-    log('얼굴 인식 모델 로드 완료 (재인식 정확도 향상)', 'ok');
-  } catch (err) {
-    faceModelsLoaded = false;
-    log('얼굴 인식 모델 로드 실패, 외형(옷 색상) 비교만 사용합니다: ' + err.message, 'warn');
-  }
-}
-
-async function detectFaceDescriptor(bbox) {
-  if (!faceModelsLoaded) return null;
-  const [bx, by, bw, bh] = bbox;
-  const sx = Math.max(0, bx);
-  const sy = Math.max(0, by);
-  const sw = Math.min(bw, (video.videoWidth || 0) - sx);
-  const sh = Math.min(bh, (video.videoHeight || 0) - sy);
-  if (sw <= 0 || sh <= 0) return null;
-  faceCanvas.width = sw;
-  faceCanvas.height = sh;
-  const fctx = faceCanvas.getContext('2d');
-  fctx.drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
-  try {
-    const result = await faceapi
-      .detectSingleFace(faceCanvas, new faceapi.TinyFaceDetectorOptions({ inputSize: 160, scoreThreshold: 0.4 }))
-      .withFaceLandmarks(true)
-      .withFaceDescriptor();
-    return result ? result.descriptor : null;
-  } catch (e) {
-    return null;
-  }
-}
 
 function extractFingerprint(bbox) {
   const [bx, by, bw, bh] = bbox;
@@ -406,7 +368,7 @@ function confirmAndZoneCheck(track, inZone) {
   }
 }
 
-async function updateTracksAndCount(personBoxes, inZone) {
+function updateTracksAndCount(personBoxes, inZone) {
   const now = Date.now();
   const maxDist = (video.videoWidth || 640) * MAX_MATCH_DIST_RATIO;
   const usedTrackIds = new Set();
@@ -430,30 +392,14 @@ async function updateTracksAndCount(personBoxes, inZone) {
       continue;
     }
 
-    // 위치로 매칭되는 트랙이 없음 -> 최근에 사라진 사람들과 "얼굴 + 외형"을 종합해서 재인식 시도
-    const faceDescriptor = await detectFaceDescriptor(box.bbox);
+    // 위치로 매칭되는 트랙이 없음 -> 최근에 사라진 사람들과 옷 색상 등 외형(지문) 비교로 재인식 시도
     const fp = extractFingerprint(box.bbox);
-
     let revived = null;
-    let revivedBy = null;
-
-    // 1순위: 얼굴 지문이 있으면 얼굴로 우선 판단 (더 정확함)
-    if (faceDescriptor) {
-      let bestFaceDist = Infinity;
-      lostTracks.forEach(lt => {
-        if (!lt.faceDescriptor) return;
-        const d = faceapi.euclideanDistance(lt.faceDescriptor, faceDescriptor);
-        if (d < FACE_MAX_DIST && d < bestFaceDist) { bestFaceDist = d; revived = lt; revivedBy = 'face'; }
-      });
-    }
-    // 2순위: 얼굴로 판단 못 하면(얼굴이 안 보이거나 얼굴 지문이 없던 사람) 옷 색상 등 외형으로 보조 판단
-    if (!revived) {
-      let bestColorDist = Infinity;
-      lostTracks.forEach(lt => {
-        const d = fingerprintDistance(lt.fp, fp);
-        if (d < REID_MAX_DIST && d < bestColorDist) { bestColorDist = d; revived = lt; revivedBy = 'color'; }
-      });
-    }
+    let revivedDist = Infinity;
+    lostTracks.forEach(lt => {
+      const d = fingerprintDistance(lt.fp, fp);
+      if (d < revivedDist && d < REID_MAX_DIST) { revivedDist = d; revived = lt; }
+    });
 
     if (revived) {
       lostTracks = lostTracks.filter(lt => lt !== revived);
@@ -462,16 +408,15 @@ async function updateTracksAndCount(personBoxes, inZone) {
       revived.lastSeenTime = now;
       revived.zoneCounted = false; // 새로운 재진입이므로 위험구역 진입 카운트는 다시 가능하게
       if (fp) revived.fp = fp;
-      if (faceDescriptor) revived.faceDescriptor = faceDescriptor;
       tracks.push(revived);
       usedTrackIds.add(revived.id);
-      log(`기존 인원 재인식됨 (${revivedBy === 'face' ? '얼굴' : '외형'} 비교, 인원수 중복 카운트 안 함)`, 'ok');
+      log('기존 인원 재인식됨 (외형 비교, 인원수 중복 카운트 안 함)', 'ok');
       confirmAndZoneCheck(revived, inZone);
       continue;
     }
 
     tracks.push({
-      id: nextTrackId++, cx: box.cx, cy: box.cy, fp, faceDescriptor,
+      id: nextTrackId++, cx: box.cx, cy: box.cy, fp,
       lastSeenTime: now, matchedFrames: 1, confirmed: false, zoneCounted: false
     });
   }
@@ -649,7 +594,6 @@ startBtn.addEventListener('click', async () => {
     model = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
     camStatus.textContent = '작동 중';
     log('AI 인식 모델 로드 완료', 'ok');
-    await loadFaceModels();
     running = true;
     detectLoop();
   } catch (err) {
@@ -732,7 +676,7 @@ async function detectLoop() {
   const inZone = distance <= DANGER_RADIUS;
 
   // 인원 카운팅: 위치 기반 트래킹으로 "같은 사람"을 추적해서 진짜 새로운 사람만 카운트
-  await updateTracksAndCount(personBoxes, inZone);
+  updateTracksAndCount(personBoxes, inZone);
 
   let state, lidarText, camText, resultText;
 

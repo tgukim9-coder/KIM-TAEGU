@@ -136,6 +136,18 @@
   .counter-val.alarm { color: var(--red); }
   .counter-label { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
 
+  #statsChart { width: 100%; display: block; }
+  .stats-legend { display: flex; gap: 16px; font-size: 11.5px; color: var(--text-dim); margin-top: 8px; }
+  .dot-legend { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
+  .dot-legend.yellow { background: var(--yellow); }
+  .dot-legend.red { background: var(--red); }
+  .stats-summary { font-size: 12px; color: var(--text-dim); margin-top: 8px; font-family: var(--mono); }
+  .reset-btn {
+    margin-top: 10px; background: transparent; color: var(--text-dim); border: 1px solid var(--panel-line);
+    padding: 6px 12px; border-radius: 3px; font-size: 11.5px; cursor: pointer;
+  }
+  .reset-btn:hover { color: var(--text); border-color: var(--text-dim); }
+
   .status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .status-cell {
     background: var(--bg); border: 1px solid var(--panel-line); border-radius: 3px;
@@ -237,6 +249,17 @@
       <h2>이벤트 로그</h2>
       <div class="log" id="log"></div>
     </div>
+
+    <div class="panel">
+      <h2>시간대별 통계 (오늘)</h2>
+      <canvas id="statsChart" height="140"></canvas>
+      <div class="stats-legend">
+        <span><i class="dot-legend yellow"></i>통과 인원</span>
+        <span><i class="dot-legend red"></i>위험구역 진입</span>
+      </div>
+      <div class="stats-summary" id="statsSummary">오늘 누적: 통과 0명 · 위험구역 진입 0건</div>
+      <button class="reset-btn" id="resetStatsBtn">통계 초기화</button>
+    </div>
   </div>
 </div>
 
@@ -245,7 +268,8 @@
   2단계(하드웨어 연동)에서는 <code>getSimulatedDistance()</code> 부분만 실제 라이다 센서(RPLidar, TF-Luna 등)의 시리얼/USB 데이터 읽기로 교체하면
   나머지 융합 로직·경보 로직은 그대로 재사용할 수 있습니다. 카메라 인식은 지금 이미 실제 웹캠 영상으로 TensorFlow.js(COCO-SSD) 모델이 동작 중입니다 —
   "사람" 클래스가 감지될 때만 위험 판정이 나도록 사업계획서의 오경보 제거 로직을 구현했습니다. 쓰러짐 의심 판정은 사람 박스의 가로/세로 비율로 추정하는
-  간이 버전이며, 정밀화하려면 ErgoAssess에서 쓴 포즈 추정(MoveNet) 방식을 붙이면 됩니다.
+  간이 버전이며, 정밀화하려면 ErgoAssess에서 쓴 포즈 추정(MoveNet) 방식을 붙이면 됩니다. 통계는 브라우저에 저장(localStorage)되므로 같은 기기·같은
+  브라우저에서 다시 접속해도 기록이 유지됩니다 (다른 기기와는 공유되지 않습니다).
 </div>
 
 <script src="libs/tf.min.js"></script>
@@ -266,6 +290,10 @@ const fusionResult = document.getElementById('fusionResult');
 const logEl = document.getElementById('log');
 const stageLed = document.getElementById('stageLed');
 const stageLedText = document.getElementById('stageLedText');
+const statsChart = document.getElementById('statsChart');
+const statsCtx = statsChart.getContext('2d');
+const statsSummary = document.getElementById('statsSummary');
+const resetStatsBtn = document.getElementById('resetStatsBtn');
 
 let model = null;
 let running = false;
@@ -278,9 +306,159 @@ const totalCountEl = document.getElementById('totalCount');
 const zoneCountEl = document.getElementById('zoneCount');
 let totalCount = 0;
 let zoneCount = 0;
-let personWasPresent = false;
-let personAbsentFrames = 0;
-const ABSENT_FRAMES_TO_RESET = 8; // 이 프레임 수만큼 연속으로 사람이 안 보여야 "떠났다"로 판단 (깜빡임으로 인한 중복 카운트 방지)
+// ===== 위치 기반 인원 트래킹 (같은 사람 중복 카운트 방지) =====
+let tracks = []; // { id, cx, cy, lastSeenTime, matchedFrames, confirmed, zoneCounted }
+let nextTrackId = 1;
+const MAX_MATCH_DIST_RATIO = 0.35; // 프레임 간 같은 사람으로 인정할 최대 이동거리 (비디오 폭 대비 비율)
+const CONFIRM_FRAMES = 3;          // 이 횟수 이상 매칭되어야 "진짜 사람"으로 확정하고 카운트
+const TRACK_TIMEOUT_MS = 1500;     // 이 시간 이상 안 보이면 같은 사람이 떠난 것으로 보고 트랙 제거
+
+function updateTracksAndCount(personBoxes, inZone) {
+  const now = Date.now();
+  const maxDist = (video.videoWidth || 640) * MAX_MATCH_DIST_RATIO;
+  const usedTrackIds = new Set();
+
+  personBoxes.forEach(box => {
+    let bestTrack = null;
+    let bestDist = Infinity;
+    tracks.forEach(t => {
+      if (usedTrackIds.has(t.id)) return;
+      const d = Math.hypot(t.cx - box.cx, t.cy - box.cy);
+      if (d < bestDist && d < maxDist) { bestDist = d; bestTrack = t; }
+    });
+
+    if (bestTrack) {
+      bestTrack.cx = box.cx;
+      bestTrack.cy = box.cy;
+      bestTrack.lastSeenTime = now;
+      bestTrack.matchedFrames += 1;
+      usedTrackIds.add(bestTrack.id);
+
+      if (!bestTrack.confirmed && bestTrack.matchedFrames >= CONFIRM_FRAMES) {
+        bestTrack.confirmed = true;
+        totalCount += 1;
+        totalCountEl.textContent = totalCount;
+        log(`통과 인원 카운트 +1 (누적 ${totalCount}명)`, 'ok');
+        recordStatEvent('total');
+      }
+      if (bestTrack.confirmed && !bestTrack.zoneCounted && inZone) {
+        bestTrack.zoneCounted = true;
+        zoneCount += 1;
+        zoneCountEl.textContent = zoneCount;
+        log(`위험구역 진입 카운트 +1 (누적 ${zoneCount}건)`, 'alarm');
+        recordStatEvent('zone');
+      }
+    } else {
+      tracks.push({
+        id: nextTrackId++, cx: box.cx, cy: box.cy,
+        lastSeenTime: now, matchedFrames: 1, confirmed: false, zoneCounted: false
+      });
+    }
+  });
+
+  // 일정 시간 이상 매칭 안 된 트랙은 제거 (다시 나타나면 새로운 통과로 카운트됨)
+  tracks = tracks.filter(t => now - t.lastSeenTime <= TRACK_TIMEOUT_MS);
+}
+
+// ===== 시간대별 통계 =====
+const STATS_KEY = 'smartSafetyDemoEvents';
+const STATS_MAX_AGE_DAYS = 30; // 이보다 오래된 기록은 자동 정리
+
+function loadStatEvents() {
+  try {
+    const raw = localStorage.getItem(STATS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function saveStatEvents(events) {
+  try {
+    localStorage.setItem(STATS_KEY, JSON.stringify(events));
+  } catch (e) {
+    // 저장 실패(용량 초과 등)해도 화면 동작에는 지장 없도록 무시
+  }
+}
+
+let statEvents = loadStatEvents();
+
+function recordStatEvent(type) {
+  const cutoff = Date.now() - STATS_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
+  statEvents.push({ ts: Date.now(), type });
+  statEvents = statEvents.filter(e => e.ts >= cutoff);
+  saveStatEvents(statEvents);
+  renderStatsChart();
+}
+
+function renderStatsChart() {
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const todayEvents = statEvents.filter(e => e.ts >= todayStart);
+
+  const hourlyTotal = new Array(24).fill(0);
+  const hourlyZone = new Array(24).fill(0);
+  todayEvents.forEach(e => {
+    const h = new Date(e.ts).getHours();
+    if (e.type === 'total') hourlyTotal[h] += 1;
+    else if (e.type === 'zone') hourlyZone[h] += 1;
+  });
+
+  const todayTotalCount = hourlyTotal.reduce((a, b) => a + b, 0);
+  const todayZoneCount = hourlyZone.reduce((a, b) => a + b, 0);
+  statsSummary.textContent = `오늘 누적: 통과 ${todayTotalCount}명 · 위험구역 진입 ${todayZoneCount}건`;
+
+  // 캔버스 렌더링 (고해상도 대응)
+  const dpr = window.devicePixelRatio || 1;
+  const cssWidth = statsChart.parentElement.clientWidth;
+  const cssHeight = 140;
+  statsChart.width = cssWidth * dpr;
+  statsChart.height = cssHeight * dpr;
+  statsChart.style.width = cssWidth + 'px';
+  statsChart.style.height = cssHeight + 'px';
+  statsCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  statsCtx.clearRect(0, 0, cssWidth, cssHeight);
+
+  const maxVal = Math.max(1, ...hourlyTotal);
+  const chartH = cssHeight - 20;
+  const barGroupW = cssWidth / 24;
+  const barW = Math.max(1, barGroupW * 0.55);
+
+  for (let h = 0; h < 24; h++) {
+    const x = h * barGroupW + (barGroupW - barW) / 2;
+    const totalH = (hourlyTotal[h] / maxVal) * chartH;
+    const zoneH = (hourlyZone[h] / maxVal) * chartH;
+
+    statsCtx.fillStyle = '#3a3f42';
+    statsCtx.fillRect(x, chartH - totalH, barW, totalH || 1);
+
+    if (hourlyZone[h] > 0) {
+      statsCtx.fillStyle = '#f5b700';
+      statsCtx.fillRect(x, chartH - totalH, barW, totalH);
+      statsCtx.fillStyle = '#e8412c';
+      statsCtx.fillRect(x, chartH - zoneH, barW, zoneH);
+    }
+
+    if (h % 3 === 0) {
+      statsCtx.fillStyle = '#9aa0a2';
+      statsCtx.font = '9px monospace';
+      statsCtx.fillText(h + '시', x - 2, cssHeight - 5);
+    }
+  }
+}
+
+resetStatsBtn.addEventListener('click', () => {
+  if (!confirm('저장된 통계 기록을 모두 삭제할까요?')) return;
+  statEvents = [];
+  saveStatEvents(statEvents);
+  renderStatsChart();
+  log('통계 기록 초기화됨', 'ok');
+});
+
+window.addEventListener('resize', renderStatsChart);
+renderStatsChart();
 
 async function startStream(facing) {
   if (currentStream) {
@@ -397,6 +575,7 @@ async function detectLoop() {
   let personDetected = false;
   let otherObjectDetected = false;
   let fallSuspected = false;
+  const personBoxes = [];
 
   predictions.forEach(p => {
     if (p.score < 0.5) return;
@@ -405,6 +584,7 @@ async function detectLoop() {
     if (isPerson) {
       personDetected = true;
       if (w / h > 1.3) fallSuspected = true;
+      personBoxes.push({ cx: x + w / 2, cy: y + h / 2 });
     } else {
       otherObjectDetected = true;
     }
@@ -419,26 +599,8 @@ async function detectLoop() {
   const distance = getSimulatedDistance();
   const inZone = distance <= DANGER_RADIUS;
 
-  // 인원 카운팅: 사람이 화면에 새로 나타날 때(연속 부재 후 등장)만 1회 카운트
-  if (personDetected) {
-    personAbsentFrames = 0;
-    if (!personWasPresent) {
-      totalCount += 1;
-      totalCountEl.textContent = totalCount;
-      log(`통과 인원 카운트 +1 (누적 ${totalCount}명)`, 'ok');
-      if (inZone) {
-        zoneCount += 1;
-        zoneCountEl.textContent = zoneCount;
-        log(`위험구역 진입 카운트 +1 (누적 ${zoneCount}건)`, 'alarm');
-      }
-      personWasPresent = true;
-    }
-  } else {
-    personAbsentFrames += 1;
-    if (personAbsentFrames >= ABSENT_FRAMES_TO_RESET) {
-      personWasPresent = false;
-    }
-  }
+  // 인원 카운팅: 위치 기반 트래킹으로 "같은 사람"을 추적해서 진짜 새로운 사람만 카운트
+  updateTracksAndCount(personBoxes, inZone);
 
   let state, lidarText, camText, resultText;
 

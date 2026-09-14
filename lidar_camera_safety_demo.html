@@ -63,10 +63,10 @@
 
   .layout {
     display: grid;
-    grid-template-columns: 1.5fr 1fr;
+    grid-template-columns: 2.2fr 1fr;
     gap: 18px;
     padding: 20px;
-    max-width: 1280px;
+    max-width: 1600px;
     margin: 0 auto;
   }
   @media (max-width: 860px) { .layout { grid-template-columns: 1fr; } }
@@ -103,6 +103,18 @@
     padding: 7px 12px; border-radius: 3px; font-size: 12.5px; cursor: pointer;
   }
   .switch-cam-btn:hover { background: rgba(0,0,0,0.75); }
+
+  .lidar-connect-btn {
+    background: var(--panel); color: var(--text); border: 1px solid var(--yellow);
+    padding: 8px 16px; border-radius: 3px; font-size: 13px; cursor: pointer; font-weight: 600;
+  }
+  .lidar-connect-btn:hover { background: var(--yellow); color: #1b1e1f; }
+  .lidar-connect-btn.connected { border-color: var(--green); color: var(--green); }
+  .lidar-status-badge {
+    font-size: 12px; color: var(--text-dim); font-family: var(--mono);
+    padding: 6px 10px; border: 1px solid var(--panel-line); border-radius: 3px;
+  }
+  .lidar-status-badge.live { color: var(--green); border-color: var(--green); }
 
   .panel {
     background: var(--panel);
@@ -225,12 +237,16 @@
     </div>
 
     <div class="panel">
-      <h2>라이다 거리 시뮬레이션 (실제 하드웨어 연동 전 임시 입력)</h2>
+      <h2>라이다 거리</h2>
+      <div class="slider-row">
+        <button class="lidar-connect-btn" id="lidarConnectBtn">라이다 연결 (USB)</button>
+        <span class="lidar-status-badge" id="lidarStatusBadge">시뮬레이션 모드</span>
+      </div>
       <div class="slider-row">
         <input type="range" id="distSlider" min="0.3" max="5.0" step="0.1" value="3.0">
         <div class="dist-value"><span id="distValue">3.0</span>m</div>
       </div>
-      <div class="zone-note">위험 반경 기준: <b style="color:var(--text)">1.5m</b> (사업계획서 기준값). 이 값 이하일 때 라이다가 "물체 진입"으로 판단합니다.</div>
+      <div class="zone-note">위험 반경 기준: <b style="color:var(--text)">1.5m</b> (사업계획서 기준값). 이 값 이하일 때 라이다가 "물체 진입"으로 판단합니다. 센서를 연결하지 않으면 위 슬라이더로 계속 시뮬레이션할 수 있습니다. (라이다 연결은 Chrome/Edge PC 브라우저에서만 가능합니다.)</div>
     </div>
 
     <div class="panel">
@@ -587,9 +603,98 @@ async function startStream(facing) {
 }
 
 function getSimulatedDistance() {
-  // 2단계에서 실제 라이다 센서 값으로 교체될 부분
+  // 라이다 센서가 실제 연결되어 있으면 실측값을, 아니면 슬라이더 시뮬레이션 값을 사용
+  if (lidarConnected && latestLidarDistanceM !== null) {
+    return latestLidarDistanceM;
+  }
   return parseFloat(distSlider.value);
 }
+
+// ===== 실제 라이다 센서 연결 (Web Serial API, TF-Luna UART 프로토콜) =====
+const lidarConnectBtn = document.getElementById('lidarConnectBtn');
+const lidarStatusBadge = document.getElementById('lidarStatusBadge');
+let lidarPort = null;
+let lidarReader = null;
+let lidarConnected = false;
+let latestLidarDistanceM = null;
+
+async function connectLidar() {
+  if (!('serial' in navigator)) {
+    log('이 브라우저는 라이다 직접 연결(Web Serial API)을 지원하지 않습니다. PC의 Chrome 또는 Edge 브라우저를 사용해주세요.', 'warn');
+    return;
+  }
+  try {
+    lidarPort = await navigator.serial.requestPort();
+    await lidarPort.open({ baudRate: 115200 }); // TF-Luna 기본 통신속도
+    lidarConnected = true;
+    lidarConnectBtn.textContent = '라이다 연결 해제';
+    lidarConnectBtn.classList.add('connected');
+    lidarStatusBadge.textContent = '실측 연결됨';
+    lidarStatusBadge.classList.add('live');
+    distSlider.disabled = true;
+    log('라이다 센서 연결됨 (TF-Luna, 115200bps) — 이제부터 실제 거리값을 사용합니다', 'ok');
+    readLidarLoop();
+  } catch (err) {
+    log('라이다 연결 실패: ' + err.message, 'warn');
+  }
+}
+
+async function readLidarLoop() {
+  const reader = lidarPort.readable.getReader();
+  lidarReader = reader;
+  let buffer = [];
+  try {
+    while (lidarConnected) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      for (const byte of value) {
+        buffer.push(byte);
+        if (buffer.length > 9) buffer.shift();
+        // TF-Luna 프레임: 0x59 0x59 헤더 + Dist_L + Dist_H + ... + 체크섬 (총 9바이트)
+        if (buffer.length === 9 && buffer[0] === 0x59 && buffer[1] === 0x59) {
+          const checksum = buffer.slice(0, 8).reduce((a, b) => (a + b) & 0xFF, 0);
+          if (checksum === buffer[8]) {
+            const distCm = buffer[2] + buffer[3] * 256;
+            latestLidarDistanceM = distCm / 100;
+          }
+          buffer = [];
+        }
+      }
+    }
+  } catch (err) {
+    log('라이다 데이터 읽기 오류: ' + err.message, 'warn');
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+async function disconnectLidar() {
+  lidarConnected = false;
+  latestLidarDistanceM = null;
+  try {
+    if (lidarReader) { await lidarReader.cancel(); }
+    if (lidarPort) { await lidarPort.close(); }
+  } catch (e) {
+    // 이미 닫혀있는 경우 등은 무시
+  }
+  lidarPort = null;
+  lidarReader = null;
+  lidarConnectBtn.textContent = '라이다 연결 (USB)';
+  lidarConnectBtn.classList.remove('connected');
+  lidarStatusBadge.textContent = '시뮬레이션 모드';
+  lidarStatusBadge.classList.remove('live');
+  distSlider.disabled = false;
+  log('라이다 연결 해제됨 (슬라이더 시뮬레이션 모드로 복귀)', 'ok');
+}
+
+lidarConnectBtn.addEventListener('click', () => {
+  if (lidarConnected) {
+    disconnectLidar();
+  } else {
+    connectLidar();
+  }
+});
 
 function log(message, level) {
   const time = new Date().toLocaleTimeString('ko-KR', { hour12: false });
@@ -715,6 +820,10 @@ async function detectLoop() {
   });
 
   const distance = getSimulatedDistance();
+  if (lidarConnected && latestLidarDistanceM !== null) {
+    distValue.textContent = distance.toFixed(1);
+    distSlider.value = Math.min(distSlider.max, Math.max(distSlider.min, distance));
+  }
   const inZone = distance <= DANGER_RADIUS;
 
   // 인원 카운팅: 위치 기반 트래킹으로 "같은 사람"을 추적해서 진짜 새로운 사람만 카운트

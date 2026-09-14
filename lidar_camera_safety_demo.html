@@ -127,6 +127,15 @@
   }
   .zone-note { color: var(--text-dim); font-size: 11.5px; margin-top: 6px; line-height: 1.5; }
 
+  .counter-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 8px; }
+  .counter-cell {
+    background: var(--bg); border: 1px solid var(--panel-line); border-radius: 3px;
+    padding: 12px 10px; text-align: center;
+  }
+  .counter-val { font-family: var(--mono); font-size: 28px; font-weight: 600; color: var(--yellow); line-height: 1.1; }
+  .counter-val.alarm { color: var(--red); }
+  .counter-label { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+
   .status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .status-cell {
     background: var(--bg); border: 1px solid var(--panel-line); border-radius: 3px;
@@ -183,6 +192,21 @@
   </div>
 
   <div class="side">
+    <div class="panel counter-panel">
+      <h2>인원 카운트</h2>
+      <div class="counter-grid">
+        <div class="counter-cell">
+          <div class="counter-val" id="totalCount">0</div>
+          <div class="counter-label">화면 통과 인원</div>
+        </div>
+        <div class="counter-cell">
+          <div class="counter-val alarm" id="zoneCount">0</div>
+          <div class="counter-label">위험구역 진입 (근접 경보)</div>
+        </div>
+      </div>
+      <div class="zone-note">사람이 화면에 새로 나타날 때마다 1씩 증가합니다 (같은 사람이 계속 서 있으면 중복으로 세지 않습니다).</div>
+    </div>
+
     <div class="panel">
       <h2>라이다 거리 시뮬레이션 (실제 하드웨어 연동 전 임시 입력)</h2>
       <div class="slider-row">
@@ -250,6 +274,13 @@ let audioCtx = null;
 let currentFacing = 'environment'; // 후면 카메라 기본값 (현장 설치 시 작업자를 비추는 방향)
 let currentStream = null;
 const switchCamBtn = document.getElementById('switchCamBtn');
+const totalCountEl = document.getElementById('totalCount');
+const zoneCountEl = document.getElementById('zoneCount');
+let totalCount = 0;
+let zoneCount = 0;
+let personWasPresent = false;
+let personAbsentFrames = 0;
+const ABSENT_FRAMES_TO_RESET = 8; // 이 프레임 수만큼 연속으로 사람이 안 보여야 "떠났다"로 판단 (깜빡임으로 인한 중복 카운트 방지)
 
 async function startStream(facing) {
   if (currentStream) {
@@ -363,6 +394,27 @@ async function detectLoop() {
 
   const distance = getSimulatedDistance();
   const inZone = distance <= DANGER_RADIUS;
+
+  // 인원 카운팅: 사람이 화면에 새로 나타날 때(연속 부재 후 등장)만 1회 카운트
+  if (personDetected) {
+    personAbsentFrames = 0;
+    if (!personWasPresent) {
+      totalCount += 1;
+      totalCountEl.textContent = totalCount;
+      log(`통과 인원 카운트 +1 (누적 ${totalCount}명)`, 'ok');
+      if (inZone) {
+        zoneCount += 1;
+        zoneCountEl.textContent = zoneCount;
+        log(`위험구역 진입 카운트 +1 (누적 ${zoneCount}건)`, 'alarm');
+      }
+      personWasPresent = true;
+    }
+  } else {
+    personAbsentFrames += 1;
+    if (personAbsentFrames >= ABSENT_FRAMES_TO_RESET) {
+      personWasPresent = false;
+    }
+  }
 
   let state, lidarText, camText, resultText;
 

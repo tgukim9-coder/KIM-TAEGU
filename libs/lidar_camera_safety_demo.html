@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>스마트 산재예방 시스템 — SW 프로토타입</title>
+<style>
+  :root {
+    --bg: #1b1e1f;
+    --panel: #24282a;
+    --panel-line: #34393b;
+    --text: #e9e7e1;
+    --text-dim: #9aa0a2;
+    --yellow: #f5b700;
+    --red: #e8412c;
+    --green: #3fa34d;
+    --amber: #d98a1f;
+    --mono: ui-monospace, 'SFMono-Regular', Consolas, monospace;
+    --sans: -apple-system, 'Pretendard', 'Noto Sans KR', system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+  }
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 24px;
+    border-bottom: 1px solid var(--panel-line);
+    background: repeating-linear-gradient(135deg, transparent, transparent 18px, rgba(245,183,0,0.04) 18px, rgba(245,183,0,0.04) 36px);
+  }
+  .topbar h1 {
+    font-size: 17px;
+    font-weight: 600;
+    margin: 0;
+    letter-spacing: -0.01em;
+  }
+  .topbar .sub {
+    color: var(--text-dim);
+    font-size: 12.5px;
+    margin-top: 2px;
+  }
+  .stage-led {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 14px;
+    border-radius: 3px;
+    border: 1px solid var(--panel-line);
+    font-family: var(--mono);
+    font-size: 13px;
+    transition: all 0.25s ease;
+  }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px var(--green); transition: all 0.25s ease; }
+  .stage-led.warn .dot { background: var(--amber); box-shadow: 0 0 8px var(--amber); }
+  .stage-led.alarm .dot { background: var(--red); box-shadow: 0 0 10px var(--red); animation: blink 0.6s infinite; }
+  @keyframes blink { 50% { opacity: 0.35; } }
+
+  .layout {
+    display: grid;
+    grid-template-columns: 1.5fr 1fr;
+    gap: 18px;
+    padding: 20px;
+    max-width: 1280px;
+    margin: 0 auto;
+  }
+  @media (max-width: 860px) { .layout { grid-template-columns: 1fr; } }
+
+  .viewport {
+    position: relative;
+    background: #000;
+    border-radius: 4px;
+    overflow: hidden;
+    aspect-ratio: 4/3;
+    border: 2px solid var(--panel-line);
+    transition: border-color 0.2s ease;
+  }
+  .viewport.alarm-border { border-color: var(--red); box-shadow: 0 0 0 3px rgba(232,65,44,0.25); }
+  .viewport video, .viewport canvas {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+  }
+  .viewport video { object-fit: cover; }
+  .viewport canvas { }
+  .viewport.mirrored video, .viewport.mirrored canvas { transform: scaleX(-1); }
+  .cam-placeholder {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 10px;
+    color: var(--text-dim); font-size: 13.5px; text-align: center; padding: 20px;
+  }
+  .cam-btn {
+    background: var(--yellow); color: #1b1e1f; border: none; padding: 9px 18px;
+    border-radius: 3px; font-weight: 600; font-size: 13.5px; cursor: pointer;
+  }
+  .cam-btn:hover { filter: brightness(1.08); }
+  .switch-cam-btn {
+    position: absolute; top: 10px; right: 10px; z-index: 5;
+    background: rgba(0,0,0,0.55); color: var(--text); border: 1px solid var(--panel-line);
+    padding: 7px 12px; border-radius: 3px; font-size: 12.5px; cursor: pointer;
+  }
+  .switch-cam-btn:hover { background: rgba(0,0,0,0.75); }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--panel-line);
+    border-radius: 4px;
+    padding: 18px 18px 16px;
+    margin-bottom: 14px;
+  }
+  .panel h2 {
+    font-size: 12.5px;
+    color: var(--text-dim);
+    margin: 0 0 12px;
+    font-weight: 600;
+  }
+
+  .slider-row { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
+  input[type=range] {
+    flex: 1; accent-color: var(--yellow); height: 4px;
+  }
+  .dist-value {
+    font-family: var(--mono); font-size: 22px; min-width: 78px; text-align: right;
+  }
+  .zone-note { color: var(--text-dim); font-size: 11.5px; margin-top: 6px; line-height: 1.5; }
+
+  .counter-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 8px; }
+  .counter-cell {
+    background: var(--bg); border: 1px solid var(--panel-line); border-radius: 3px;
+    padding: 12px 10px; text-align: center;
+  }
+  .counter-val { font-family: var(--mono); font-size: 28px; font-weight: 600; color: var(--yellow); line-height: 1.1; }
+  .counter-val.alarm { color: var(--red); }
+  .counter-label { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+
+  .status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .status-cell {
+    background: var(--bg); border: 1px solid var(--panel-line); border-radius: 3px;
+    padding: 10px 12px;
+  }
+  .status-cell .label { font-size: 11px; color: var(--text-dim); margin-bottom: 4px; }
+  .status-cell .val { font-family: var(--mono); font-size: 15px; }
+  .val.ok { color: var(--green); }
+  .val.warn { color: var(--amber); }
+  .val.alarm { color: var(--red); }
+
+  .fusion-result {
+    margin-top: 12px; padding: 12px 14px; border-radius: 3px;
+    font-size: 13.5px; line-height: 1.55; border-left: 3px solid var(--panel-line);
+    background: var(--bg);
+  }
+  .fusion-result.ok { border-left-color: var(--green); }
+  .fusion-result.warn { border-left-color: var(--amber); }
+  .fusion-result.alarm { border-left-color: var(--red); }
+
+  .log { max-height: 190px; overflow-y: auto; font-family: var(--mono); font-size: 12px; }
+  .log-item { padding: 5px 0; border-bottom: 1px solid var(--panel-line); color: var(--text-dim); display: flex; gap: 8px; }
+  .log-item .t { color: #6b7274; flex-shrink: 0; }
+  .log-item.alarm .m { color: var(--red); }
+  .log-item.warn .m { color: var(--amber); }
+  .log-item.ok .m { color: var(--green); }
+
+  .arch-note {
+    font-size: 11.5px; color: var(--text-dim); line-height: 1.6; padding: 0 24px 24px;
+    max-width: 1280px; margin: 0 auto;
+  }
+  .arch-note b { color: var(--text); }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div>
+    <h1>스마트 산재예방 시스템 — 1단계 SW 프로토타입</h1>
+    <div class="sub">라이다-카메라 융합 센서 로직 시뮬레이션</div>
+  </div>
+  <div class="stage-led" id="stageLed"><div class="dot"></div><span id="stageLedText">SAFE</span></div>
+</div>
+
+<div class="layout">
+  <div class="viewport" id="viewport">
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="overlay"></canvas>
+    <div class="cam-placeholder" id="camPlaceholder">
+      <div>카메라를 시작하면 AI가 사람/사물을 실시간으로 판별합니다</div>
+      <button class="cam-btn" id="startBtn">카메라 시작</button>
+    </div>
+    <button class="switch-cam-btn" id="switchCamBtn" style="display:none;">전/후면 전환</button>
+  </div>
+
+  <div class="side">
+    <div class="panel counter-panel">
+      <h2>인원 카운트</h2>
+      <div class="counter-grid">
+        <div class="counter-cell">
+          <div class="counter-val" id="totalCount">0</div>
+          <div class="counter-label">화면 통과 인원</div>
+        </div>
+        <div class="counter-cell">
+          <div class="counter-val alarm" id="zoneCount">0</div>
+          <div class="counter-label">위험구역 진입 (근접 경보)</div>
+        </div>
+      </div>
+      <div class="zone-note">사람이 화면에 새로 나타날 때마다 1씩 증가합니다 (같은 사람이 계속 서 있으면 중복으로 세지 않습니다).</div>
+    </div>
+
+    <div class="panel">
+      <h2>라이다 거리 시뮬레이션 (실제 하드웨어 연동 전 임시 입력)</h2>
+      <div class="slider-row">
+        <input type="range" id="distSlider" min="0.3" max="5.0" step="0.1" value="3.0">
+        <div class="dist-value"><span id="distValue">3.0</span>m</div>
+      </div>
+      <div class="zone-note">위험 반경 기준: <b style="color:var(--text)">1.5m</b> (사업계획서 기준값). 이 값 이하일 때 라이다가 "물체 진입"으로 판단합니다.</div>
+    </div>
+
+    <div class="panel">
+      <h2>센서 상태</h2>
+      <div class="status-grid">
+        <div class="status-cell">
+          <div class="label">라이다</div>
+          <div class="val ok" id="lidarStatus">안전</div>
+        </div>
+        <div class="status-cell">
+          <div class="label">AI 카메라</div>
+          <div class="val ok" id="camStatus">대기</div>
+        </div>
+      </div>
+      <div class="fusion-result ok" id="fusionResult">
+        라이다·카메라 융합 대기 중입니다. 카메라를 시작하세요.
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>이벤트 로그</h2>
+      <div class="log" id="log"></div>
+    </div>
+  </div>
+</div>
+
+<div class="arch-note">
+  <b>아키텍처 메모:</b> 지금 이 데모의 거리값은 슬라이더로 시뮬레이션되지만, 로직 구조는 실제 하드웨어와 동일하게 짰습니다.
+  2단계(하드웨어 연동)에서는 <code>getSimulatedDistance()</code> 부분만 실제 라이다 센서(RPLidar, TF-Luna 등)의 시리얼/USB 데이터 읽기로 교체하면
+  나머지 융합 로직·경보 로직은 그대로 재사용할 수 있습니다. 카메라 인식은 지금 이미 실제 웹캠 영상으로 TensorFlow.js(COCO-SSD) 모델이 동작 중입니다 —
+  "사람" 클래스가 감지될 때만 위험 판정이 나도록 사업계획서의 오경보 제거 로직을 구현했습니다. 쓰러짐 의심 판정은 사람 박스의 가로/세로 비율로 추정하는
+  간이 버전이며, 정밀화하려면 ErgoAssess에서 쓴 포즈 추정(MoveNet) 방식을 붙이면 됩니다.
+</div>
+
+<script src="libs/tf.min.js"></script>
+<script src="libs/coco-ssd.min.js"></script>
+<script>
+const DANGER_RADIUS = 1.5;
+const video = document.getElementById('video');
+const overlay = document.getElementById('overlay');
+const ctx = overlay.getContext('2d');
+const startBtn = document.getElementById('startBtn');
+const camPlaceholder = document.getElementById('camPlaceholder');
+const viewportEl = document.getElementById('viewport');
+const distSlider = document.getElementById('distSlider');
+const distValue = document.getElementById('distValue');
+const lidarStatus = document.getElementById('lidarStatus');
+const camStatus = document.getElementById('camStatus');
+const fusionResult = document.getElementById('fusionResult');
+const logEl = document.getElementById('log');
+const stageLed = document.getElementById('stageLed');
+const stageLedText = document.getElementById('stageLedText');
+
+let model = null;
+let running = false;
+let lastState = null; // 'ok' | 'warn' | 'alarm'
+let audioCtx = null;
+let currentFacing = 'environment'; // 후면 카메라 기본값 (현장 설치 시 작업자를 비추는 방향)
+let currentStream = null;
+const switchCamBtn = document.getElementById('switchCamBtn');
+const totalCountEl = document.getElementById('totalCount');
+const zoneCountEl = document.getElementById('zoneCount');
+let totalCount = 0;
+let zoneCount = 0;
+let personWasPresent = false;
+let personAbsentFrames = 0;
+const ABSENT_FRAMES_TO_RESET = 8; // 이 프레임 수만큼 연속으로 사람이 안 보여야 "떠났다"로 판단 (깜빡임으로 인한 중복 카운트 방지)
+
+async function startStream(facing) {
+  if (currentStream) {
+    currentStream.getTracks().forEach(t => t.stop());
+  }
+  const constraints = {
+    video: { facingMode: { ideal: facing }, width: { ideal: 640 }, height: { ideal: 480 } }
+  };
+  const stream = await navigator.mediaDevices.getUserMedia(constraints);
+  currentStream = stream;
+  video.srcObject = stream;
+  await video.play();
+  // 전면 카메라일 때만 좌우 반전(거울 모드), 후면 카메라는 반전하지 않음
+  viewportEl.classList.toggle('mirrored', facing === 'user');
+}
+
+function getSimulatedDistance() {
+  // 2단계에서 실제 라이다 센서 값으로 교체될 부분
+  return parseFloat(distSlider.value);
+}
+
+function log(message, level) {
+  const time = new Date().toLocaleTimeString('ko-KR', { hour12: false });
+  const item = document.createElement('div');
+  item.className = 'log-item ' + level;
+  item.innerHTML = `<span class="t">${time}</span><span class="m">${message}</span>`;
+  logEl.prepend(item);
+  while (logEl.children.length > 40) logEl.removeChild(logEl.lastChild);
+}
+
+function beep(freq, duration) {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.frequency.value = freq;
+  osc.type = 'square';
+  gain.gain.value = 0.05;
+  osc.connect(gain).connect(audioCtx.destination);
+  osc.start();
+  osc.stop(audioCtx.currentTime + duration);
+}
+
+distSlider.addEventListener('input', () => {
+  distValue.textContent = distSlider.value;
+});
+
+startBtn.addEventListener('click', async () => {
+  try {
+    await startStream(currentFacing);
+    camPlaceholder.style.display = 'none';
+    switchCamBtn.style.display = 'block';
+    log('카메라 스트림 시작 (후면 카메라)', 'ok');
+    if (typeof tf === 'undefined' || typeof coco_ssd === 'undefined') {
+      throw new Error('AI 라이브러리 파일(libs/tf.min.js, libs/coco-ssd.min.js)을 불러오지 못했습니다. 저장소에 libs 폴더가 올라갔는지 확인하세요.');
+    }
+    camStatus.textContent = '모델 로딩 중...';
+    model = await coco_ssd.load({ base: 'lite_mobilenet_v2' });
+    camStatus.textContent = '작동 중';
+    log('AI 인식 모델 로드 완료', 'ok');
+    running = true;
+    detectLoop();
+  } catch (err) {
+    log('카메라 접근 실패: ' + err.message, 'alarm');
+    camPlaceholder.querySelector('div').textContent = '카메라 접근 권한이 필요합니다. 브라우저 권한을 확인해주세요. (모바일은 https 주소에서만 카메라가 허용됩니다)';
+  }
+});
+
+switchCamBtn.addEventListener('click', async () => {
+  currentFacing = currentFacing === 'environment' ? 'user' : 'environment';
+  try {
+    await startStream(currentFacing);
+    log('카메라 전환: ' + (currentFacing === 'environment' ? '후면' : '전면'), 'ok');
+  } catch (err) {
+    log('카메라 전환 실패: ' + err.message, 'warn');
+  }
+});
+
+function resizeCanvas() {
+  overlay.width = viewportEl.clientWidth;
+  overlay.height = viewportEl.clientHeight;
+}
+window.addEventListener('resize', resizeCanvas);
+
+let loopErrorLogged = false;
+
+async function detectLoop() {
+  if (!running) return;
+  resizeCanvas();
+
+  if (video.readyState < 2 || video.videoWidth === 0) {
+    // 비디오 프레임이 아직 준비 안 됨 - 이번 프레임은 건너뛰고 계속 재시도
+    requestAnimationFrame(detectLoop);
+    return;
+  }
+
+  let predictions;
+  try {
+    predictions = await model.detect(video);
+  } catch (err) {
+    if (!loopErrorLogged) {
+      log('AI 인식 중 오류: ' + err.message + ' (재시도 중)', 'warn');
+      loopErrorLogged = true;
+    }
+    requestAnimationFrame(detectLoop);
+    return;
+  }
+
+  ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+  try {
+    const scaleX = overlay.width / video.videoWidth;
+    const scaleY = overlay.height / video.videoHeight;
+
+  let personDetected = false;
+  let otherObjectDetected = false;
+  let fallSuspected = false;
+
+  predictions.forEach(p => {
+    if (p.score < 0.5) return;
+    const [x, y, w, h] = p.bbox;
+    const isPerson = p.class === 'person';
+    if (isPerson) {
+      personDetected = true;
+      if (w / h > 1.3) fallSuspected = true;
+    } else {
+      otherObjectDetected = true;
+    }
+    ctx.strokeStyle = isPerson ? '#e8412c' : '#9aa0a2';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x * scaleX, y * scaleY, w * scaleX, h * scaleY);
+    ctx.fillStyle = isPerson ? '#e8412c' : '#9aa0a2';
+    ctx.font = '13px monospace';
+    ctx.fillText(`${isPerson ? '사람' : p.class} ${(p.score * 100).toFixed(0)}%`, x * scaleX + 4, y * scaleY - 6);
+  });
+
+  const distance = getSimulatedDistance();
+  const inZone = distance <= DANGER_RADIUS;
+
+  // 인원 카운팅: 사람이 화면에 새로 나타날 때(연속 부재 후 등장)만 1회 카운트
+  if (personDetected) {
+    personAbsentFrames = 0;
+    if (!personWasPresent) {
+      totalCount += 1;
+      totalCountEl.textContent = totalCount;
+      log(`통과 인원 카운트 +1 (누적 ${totalCount}명)`, 'ok');
+      if (inZone) {
+        zoneCount += 1;
+        zoneCountEl.textContent = zoneCount;
+        log(`위험구역 진입 카운트 +1 (누적 ${zoneCount}건)`, 'alarm');
+      }
+      personWasPresent = true;
+    }
+  } else {
+    personAbsentFrames += 1;
+    if (personAbsentFrames >= ABSENT_FRAMES_TO_RESET) {
+      personWasPresent = false;
+    }
+  }
+
+  let state, lidarText, camText, resultText;
+
+  if (!inZone) {
+    state = 'ok';
+    lidarText = '안전 (위험구역 밖)';
+    camText = personDetected ? '사람 인식됨' : (otherObjectDetected ? '사물 인식됨' : '대기');
+    resultText = '위험구역 밖입니다. 라이다 기준 정상 상태.';
+  } else if (personDetected) {
+    state = 'alarm';
+    lidarText = '물체 진입 감지';
+    camText = '사람으로 판별';
+    resultText = `위험구역(${DANGER_RADIUS}m) 내 작업자 진입 확인 → 경보 발령`;
+  } else if (otherObjectDetected) {
+    state = 'warn';
+    lidarText = '물체 진입 감지';
+    camText = '비작업자 사물로 판별';
+    resultText = '위험구역 내 물체 감지되었으나 사람이 아님 → 경보 억제 (오경보 제거 로직)';
+  } else {
+    state = 'warn';
+    lidarText = '물체 진입 감지';
+    camText = '카메라 미판별';
+    resultText = '라이다는 진입을 감지했지만 카메라 시야 밖이거나 판별 대기 중입니다.';
+  }
+
+  lidarStatus.textContent = lidarText;
+  lidarStatus.className = 'val ' + state;
+  camStatus.textContent = camText;
+  camStatus.className = 'val ' + (personDetected ? 'alarm' : (otherObjectDetected ? 'warn' : 'ok'));
+  fusionResult.textContent = resultText + (fallSuspected ? ' · 쓰러짐 의심 패턴 감지' : '');
+  fusionResult.className = 'fusion-result ' + state;
+
+  stageLed.className = 'stage-led' + (state === 'alarm' ? ' alarm' : state === 'warn' ? ' warn' : '');
+  stageLedText.textContent = state === 'alarm' ? 'ALARM' : state === 'warn' ? 'CAUTION' : 'SAFE';
+  viewportEl.classList.toggle('alarm-border', state === 'alarm');
+
+  if (state !== lastState) {
+    if (state === 'alarm') { log('경보 발생: 위험구역 내 작업자 감지', 'alarm'); beep(880, 0.15); }
+    else if (state === 'warn' && lastState !== 'alarm') { log('물체 감지 (경보 조건 미충족)', 'warn'); }
+    else if (state === 'ok' && lastState) { log('위험구역 이탈, 정상 복귀', 'ok'); }
+    lastState = state;
+  }
+    if (state === 'alarm' && Math.random() < 0.15) beep(880, 0.1);
+  } catch (err) {
+    if (!loopErrorLogged) {
+      log('화면 처리 중 오류: ' + err.message + ' (재시도 중)', 'warn');
+      loopErrorLogged = true;
+    }
+  }
+
+  requestAnimationFrame(detectLoop);
+}
+</script>
+</body>
+</html>

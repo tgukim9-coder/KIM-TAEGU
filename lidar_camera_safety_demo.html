@@ -217,6 +217,11 @@
         </div>
       </div>
       <div class="zone-note">새로운 사람이 인식될 때마다 "화면 통과 인원"이 1씩 증가합니다. 잠깐 사라졌다가 1분 안에 다시 나타나면 옷차림 등 외형을 비교해 같은 사람이면 중복으로 세지 않습니다. <b style="color:var(--text)">※ 같은 색 작업복을 입은 근로자들은 서로 구분이 잘 안 될 수 있습니다</b> (아래 아키텍처 메모 참고). "위험구역 진입"은 같은 사람이라도 들어올 때마다 매번 카운트됩니다 (근접경보 발생 횟수 기록용).</div>
+      <div class="slider-row" style="margin-top: 12px;">
+        <input type="range" id="reidSlider" min="0.15" max="1.2" step="0.05" value="0.55">
+        <div class="dist-value"><span id="reidValue">0.55</span></div>
+      </div>
+      <div class="zone-note">재인식 민감도 — 값을 <b style="color:var(--text)">낮추면</b> 더 엄격해져서(다른 사람과 헷갈릴 확률↓, 같은 사람을 놓칠 확률↑), <b style="color:var(--text)">높이면</b> 더 관대해집니다(같은 사람 재인식률↑, 다른 사람과 혼동될 확률↑). 나갔다 들어오면서 이벤트 로그에 뜨는 실제 차이값을 보고 맞춰보세요.</div>
     </div>
 
     <div class="panel">
@@ -319,8 +324,8 @@ const MAX_MATCH_DIST_RATIO = 0.35; // 프레임 간 같은 사람으로 인정�
 const CONFIRM_FRAMES = 3;          // 이 횟수 이상 매칭되어야 "진짜 사람"으로 확정하고 카운트
 const TRACK_TIMEOUT_MS = 1500;     // 이 시간 이상 화면에서 안 보이면 "사라짐" 처리 (재인식 대기로 이동)
 const REID_MEMORY_MS = 60000;      // 사라진 후 이 시간(1분) 안에 돌아오면 재인식 시도
-const REID_MAX_DIST = 60;          // 외형(색상) 지문 유사도 임계값 (작을수록 엄격, 얼굴을 못 쓸 때의 보조 수단)
-const FP_GRID = 4;
+let reidMaxDist = 0.55;            // 외형(색상) 지문 유사도 임계값 - 화면의 슬라이더로 실시간 조절 가능
+const FP_GRID = 5;
 const fpCanvas = document.createElement('canvas');
 fpCanvas.width = FP_GRID;
 fpCanvas.height = FP_GRID;
@@ -328,20 +333,41 @@ const fpCtx = fpCanvas.getContext('2d', { willReadFrequently: true });
 
 function extractFingerprint(bbox) {
   const [bx, by, bw, bh] = bbox;
-  const sx = Math.max(0, bx);
-  const sy = Math.max(0, by);
-  const sw = Math.min(bw, (video.videoWidth || 0) - sx);
-  const sh = Math.min(bh, (video.videoHeight || 0) - sy);
+  // 배경/머리/발이 섞이기 쉬운 가장자리를 피하고, 옷이 확실히 나오는 중앙 몸통부만 사용
+  const cropX = bx + bw * 0.2;
+  const cropY = by + bh * 0.18;
+  const cropW = bw * 0.6;
+  const cropH = bh * 0.55;
+  const sx = Math.max(0, cropX);
+  const sy = Math.max(0, cropY);
+  const sw = Math.min(cropW, (video.videoWidth || 0) - sx);
+  const sh = Math.min(cropH, (video.videoHeight || 0) - sy);
   if (sw <= 0 || sh <= 0) return null;
   try {
     fpCtx.drawImage(video, sx, sy, sw, sh, 0, 0, FP_GRID, FP_GRID);
     const data = fpCtx.getImageData(0, 0, FP_GRID, FP_GRID).data;
     const fp = [];
-    for (let i = 0; i < data.length; i += 4) fp.push(data[i], data[i + 1], data[i + 2]);
+    for (let i = 0; i < data.length; i += 4) {
+      // 밝기(조명) 영향을 줄이기 위해 R,G,B 절대값 대신 색상 비율(chromaticity)만 사용
+      const r = data[i], g = data[i + 1], b = data[i + 2];
+      const sum = r + g + b + 1;
+      fp.push(r / sum, g / sum);
+    }
     return fp;
   } catch (e) {
     return null;
   }
+}
+
+function blendFingerprint(oldFp, newFp, weight) {
+  // 매칭될 때마다 새 값을 조금씩 반영해서(이동평균) 한 프레임의 노이즈에 덜 흔들리는 "대표 색상"을 유지
+  if (!oldFp) return newFp;
+  if (!newFp) return oldFp;
+  const blended = [];
+  for (let i = 0; i < oldFp.length; i++) {
+    blended.push(oldFp[i] * (1 - weight) + newFp[i] * weight);
+  }
+  return blended;
 }
 
 function fingerprintDistance(a, b) {
@@ -388,6 +414,9 @@ function updateTracksAndCount(personBoxes, inZone) {
       bestTrack.lastSeenTime = now;
       bestTrack.matchedFrames += 1;
       usedTrackIds.add(bestTrack.id);
+      // 화면에 있는 동안 색상 지문을 계속 이동평균으로 갱신 (한 프레임 노이즈에 덜 흔들리게)
+      const frameFp = extractFingerprint(box.bbox);
+      if (frameFp) bestTrack.fp = blendFingerprint(bestTrack.fp, frameFp, 0.15);
       confirmAndZoneCheck(bestTrack, inZone);
       continue;
     }
@@ -396,9 +425,11 @@ function updateTracksAndCount(personBoxes, inZone) {
     const fp = extractFingerprint(box.bbox);
     let revived = null;
     let revivedDist = Infinity;
+    let closestAnyDist = Infinity;
     lostTracks.forEach(lt => {
       const d = fingerprintDistance(lt.fp, fp);
-      if (d < revivedDist && d < REID_MAX_DIST) { revivedDist = d; revived = lt; }
+      if (d < closestAnyDist) closestAnyDist = d;
+      if (d < revivedDist && d < reidMaxDist) { revivedDist = d; revived = lt; }
     });
 
     if (revived) {
@@ -410,9 +441,13 @@ function updateTracksAndCount(personBoxes, inZone) {
       if (fp) revived.fp = fp;
       tracks.push(revived);
       usedTrackIds.add(revived.id);
-      log('기존 인원 재인식됨 (외형 비교, 인원수 중복 카운트 안 함)', 'ok');
+      log(`기존 인원 재인식됨 (차이값 ${revivedDist.toFixed(2)} < 임계값 ${reidMaxDist.toFixed(2)}, 중복 카운트 안 함)`, 'ok');
       confirmAndZoneCheck(revived, inZone);
       continue;
+    }
+
+    if (closestAnyDist !== Infinity) {
+      log(`새로운 사람으로 판단 (가장 가까운 기존 기록과 차이값 ${closestAnyDist.toFixed(2)} ≥ 임계값 ${reidMaxDist.toFixed(2)})`, 'warn');
     }
 
     tracks.push({
@@ -579,6 +614,13 @@ function beep(freq, duration) {
 
 distSlider.addEventListener('input', () => {
   distValue.textContent = distSlider.value;
+});
+
+const reidSlider = document.getElementById('reidSlider');
+const reidValue = document.getElementById('reidValue');
+reidSlider.addEventListener('input', () => {
+  reidMaxDist = parseFloat(reidSlider.value);
+  reidValue.textContent = reidSlider.value;
 });
 
 startBtn.addEventListener('click', async () => {

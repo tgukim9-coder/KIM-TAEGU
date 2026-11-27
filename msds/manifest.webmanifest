@@ -1,6 +1,6 @@
 {
- "name": "MSDS 법정 대상물질 판별앱",
- "short_name": "MSDS 판별앱",
+ "name": "MSDS Check-Pro (MSDS 법정 대상물질 판별)",
+ "short_name": "MSDS Check-Pro",
  "description": "MSDS 사진·PDF로 작업환경측정·특수건강진단·관리대상 유해물질 해당 여부를 판정",
  "lang": "ko",
  "start_url": "./",
